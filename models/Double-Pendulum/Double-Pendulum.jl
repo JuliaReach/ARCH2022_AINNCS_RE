@@ -216,7 +216,7 @@ savefig("Double-Pendulum-less-robust-x$(vars[1])-x$(vars[2]).png")
 #-
 
 vars=(3, 4)
-fig = plot(xlab="θ₃'", ylab="θ₄'")
+fig = plot(xlab="θ₁'", ylab="θ₂'")
 sol, sim, prob, spec = res_true
 if falsification
     plot!(leg=:topleft)
@@ -240,7 +240,7 @@ savefig("Double-Pendulum-more-robust-x$(vars[1])-x$(vars[2]).png")
 #-
 
 vars=(3, 4)
-fig = plot(xlab="θ₃'", ylab="θ₄'")
+fig = plot(xlab="θ₁'", ylab="θ₂'")
 sol, sim, prob, spec = res_false
 if falsification
     plot!(leg=:topleft)
