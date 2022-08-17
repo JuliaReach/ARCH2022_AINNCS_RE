@@ -14,11 +14,6 @@ using ClosedLoopReachability: UniformAdditivePostprocessing, NoSplitter
 # chunks and run many analyses.
 const verification = true;
 
-# The following option determines whether the falsification settings should be
-# used or not. The falsification settings are sufficient to show that the safety
-# property is violated. Concretely we use a shorter time horizon.
-const falsification = true;
-
 # This model consists of a cart attached to a wall with a spring. The cart is
 # free to move on a friction-less surface. The car has a weight attached to an
 # arm, which is free to rotate about an axis. This serves as the control input
@@ -72,33 +67,43 @@ controller_relutanh = read_nnet_mat(path, act_key="act_fcns");
 # The verification problem is safety. For an initial set of $x_1 ∈ [0.6, 0.7]$,
 # $x_2 ∈ [−0.7, −0.6]$, $x_3 ∈ [−0.4, −0.3]$, and $x_4 ∈ [0.5, 0.6]$, the
 # system has to stay within the box $x ∈ [−2, 2]^4$ for a time window of 20s.
+# For the non-ReLU controllers, different settings apply.
 
-X₀ = Hyperrectangle(low=[0.6, -0.7, -0.4, 0.5], high=[0.7, -0.6, -0.3, 0.6])
+X₀_ReLU = Hyperrectangle(low=[0.6, -0.7, -0.4, 0.5], high=[0.7, -0.6, -0.3, 0.6])
+X₀_others = Hyperrectangle(low=[-0.77, -0.45, 0.51, -0.3], high=[-0.75, -0.43, 0.54, -0.28])
 U = ZeroSet(1)
 
 vars_idx = Dict(:states=>1:4, :controls=>5)
-ivp = @ivp(x' = TORA!(x), dim: 5, x(0) ∈ X₀ × U)
+ivp(X₀) = @ivp(x' = TORA!(x), dim: 5, x(0) ∈ X₀ × U)
 
-period = 1.0  # control period
+period_ReLU = 1.0  # control period for ReLU network
+period_others = 0.5  # control period for other networks
 control_postprocessing = UniformAdditivePostprocessing(-10.0)  # control postprocessing
 
-problem(controller) = ControlledPlant(ivp, controller, vars_idx, period;
-                                      postprocessing=control_postprocessing)
+problem(controller, period, X₀) =
+    ControlledPlant(ivp(X₀), controller, vars_idx, period;
+                    postprocessing=control_postprocessing)
 
 ## Safety specification
-T = 20.0  # time horizon
-T_warmup = 2 * period  # shorter time horizon for dry run
+T_ReLU = 20.0  # time horizon for ReLU network
+T_others = 5.0  # time horizon for other networks
+T_warmup_ReLU = 2 * period_ReLU  # shorter time horizon for dry run (for ReLU network)
+T_warmup_others = 2 * period_others  # shorter time horizon for dry run (for other networks)
 
 safe_states = cartesian_product(BallInf(zeros(4), 2.0), Universe(1))
-predicate_verification = X -> X ⊆ safe_states
-predicate_falsification = sol -> any(isdisjoint(R, safe_states) for F in sol for R in F);
+goal_states_x1x2 = Hyperrectangle(low=[-0.1, -0.9], high=[0.2, -0.6])
+goal_states = cartesian_product(goal_states_x1x2, Universe(3))
+
+predicate_safety_verification = X -> X ⊆ safe_states
+predicate_reachability_falsification =
+    sol -> all(isdisjoint(project(R, [1, 2]), goal_states_x1x2) for F in sol for R in F);
 
 # ## Results
 
 alg = TMJets(abstol=1e-10, orderT=8, orderQ=3)
 alg_nn = DeepZ()
 
-function benchmark(prob; T=T, splitter, goal::String, silent::Bool=false)
+function benchmark(prob; T, splitter, goal::String, silent::Bool=false)
     ## We solve the controlled system:
     silent || println("flowpipe construction")
     res_sol = @timed sol = solve(prob, T=T, alg_nn=alg_nn, alg=alg,
@@ -110,7 +115,7 @@ function benchmark(prob; T=T, splitter, goal::String, silent::Bool=false)
     silent || println("property checking")
     solz = overapproximate(sol, Zonotope)
     if goal == "verification"
-        res_pred = @timed predicate_verification(solz)
+        res_pred = @timed predicate_safety_verification(solz)
         silent || print_timed(res_pred)
         if res_pred.value
             silent || println("The property is satisfied.")
@@ -118,7 +123,7 @@ function benchmark(prob; T=T, splitter, goal::String, silent::Bool=false)
             silent || println("The property may be violated.")
         end
     elseif goal == "falsification"
-        res_pred = @timed predicate_falsification(solz)
+        res_pred = @timed predicate_reachability_falsification(solz)
         silent || print_timed(res_pred)
         if res_pred.value
             silent || println("The property is violated.")
@@ -129,58 +134,70 @@ function benchmark(prob; T=T, splitter, goal::String, silent::Bool=false)
     return solz
 end
 
-function plot_helper(fig, sol, sim, vars, lab_sim, plot_X0)
-    if vars[1] == 0
-        safe_states_projected = project(safe_states, [vars[2]])
-        time = Interval(0, T)
-        safe_states_projected = cartesian_product(time, safe_states_projected)
-    else
-        safe_states_projected = project(safe_states, vars)
+function plot_helper(fig, sol, sim, vars, T, X₀, property)
+    if property == "safety"
+        states = safe_states
+    elseif property == "reachability"
+        states = goal_states
     end
-    plot!(fig, safe_states_projected, color=:lightgreen, lab="safe states")
-    if plot_X0 && 0 ∉ vars
-        plot!(fig, project(X₀, vars), lab="X₀")
+    if vars[1] == 0
+        states_projected = project(states, [vars[2]])
+        time = Interval(0, T)
+        states_projected = cartesian_product(time, states_projected)
+    else
+        states_projected = project(states, vars)
+    end
+    if property == "safety"
+        plot!(fig, states_projected, color=:lightgreen, lab="safe states")
+    elseif property == "reachability"
+        plot!(fig, states_projected, color=:cyan, lab="target states")
     end
     plot!(fig, sol, vars=vars, color=:yellow, lab="")
-    plot_simulation!(fig, sim; vars=vars, color=:black, lab=lab_sim)
+    plot_simulation!(fig, sim; vars=vars, color=:black, lab="")
 end
 
 for case in 1:3
     if case == 1
         println("Running analysis with ReLU controller")
-        prob = problem(controller_relu)
+        prob = problem(controller_relu, period_ReLU, X₀_ReLU)
         scenario = "relu"
-        T_reach = verification ? T : T_warmup  # shorter time horizon if not verifying
+        T_reach = verification ? T_ReLU : T_warmup_ReLU  # shorter time horizon if not verifying
+        T_warmup = T_warmup_ReLU
+        X₀ = X₀_ReLU
         splitter = verification ? BoxSplitter([4, 4, 3, 5]) : NoSplitter()
         trajectories = 10
         include_vertices = true
-        lab_sim = ""
-        plot_X0 = !verification
+        plot_x3_x4 = true
         goal = "verification"
+        property = "safety"
         result = "verified"
     elseif case == 2
         println("Running analysis with sigmoid controller")
-        prob = problem(controller_sigmoid)
+        prob = problem(controller_sigmoid, period_others, X₀_others)
         scenario = "sigmoid"
-        T_reach = falsification ? 0.4 : T  # shorter time horizon if falsifying
+        T_reach = T_others
+        T_warmup = T_warmup_others
+        X₀ = X₀_others
         splitter = NoSplitter()
-        trajectories = falsification ? 1 : 10
-        include_vertices = !falsification
-        lab_sim = falsification ? "simulation" : ""
-        plot_X0 = !falsification
+        trajectories = 1
+        include_vertices = true
+        plot_x3_x4 = false
         goal = "falsification"
+        property = "reachability"
         result = "falsified"
     else
         println("Running analysis with ReLU/tanh controller")
-        prob = problem(controller_relutanh)
+        prob = problem(controller_relutanh, period_others, X₀_others)
         scenario = "relutanh"
-        T_reach = falsification ? 0.4 : T  # shorter time horizon if falsifying
+        T_reach = T_others
+        T_warmup = T_warmup_others
+        X₀ = X₀_others
         splitter = NoSplitter()
-        trajectories = falsification ? 1 : 10
-        include_vertices = !falsification
-        lab_sim = falsification ? "simulation" : ""
-        plot_X0 = !falsification
+        trajectories = 1
+        include_vertices = true
+        plot_x3_x4 = false
         goal = "falsification"
+        property = "reachability"
         result = "falsified"
     end
 
@@ -204,13 +221,15 @@ for case in 1:3
 
     vars = (1, 2)
     fig = plot(xlab="x₁", ylab="x₂")
-    plot_helper(fig, sol, sim, vars, lab_sim, plot_X0)
+    plot_helper(fig, sol, sim, vars, T_reach, X₀, property)
     savefig("TORA-$scenario-x1-x2.png")
 
-    vars=(3, 4)
-    fig = plot(xlab="x₃", ylab="x₄")
-    plot_helper(fig, sol, sim, vars, lab_sim, plot_X0)
-    savefig("TORA-$scenario-x3-x4.png")
+    if plot_x3_x4
+        vars=(3, 4)
+        fig = plot(xlab="x₃", ylab="x₄")
+        plot_helper(fig, sol, sim, vars, T_reach, X₀, property)
+        savefig("TORA-$scenario-x3-x4.png")
+    end
 end
 
 end  #jl
