@@ -6,7 +6,8 @@ module TORA  #jl
 
 using ClosedLoopReachability, MAT, Plots
 import DifferentialEquations
-using ClosedLoopReachability: UniformAdditivePostprocessing, NoSplitter
+using ClosedLoopReachability: UniformAdditivePostprocessing, NoSplitter,
+                              LinearMapPostprocessing
 
 # The following option determines whether the verification settings should be
 # used or not. The verification settings are chosen to show that the safety
@@ -78,9 +79,12 @@ ivp(X₀) = @ivp(x' = TORA!(x), dim: 5, x(0) ∈ X₀ × U)
 
 period_ReLU = 1.0  # control period for ReLU network
 period_others = 0.5  # control period for other networks
-control_postprocessing = UniformAdditivePostprocessing(-10.0)  # control postprocessing
 
-problem(controller, period, X₀) =
+# control postprocessing
+control_postprocessing_ReLU = UniformAdditivePostprocessing(-10.0)
+control_postprocessing_others = LinearMapPostprocessing(11.0)
+
+problem(controller, period, X₀, control_postprocessing) =
     ControlledPlant(ivp(X₀), controller, vars_idx, period;
                     postprocessing=control_postprocessing)
 
@@ -94,16 +98,16 @@ safe_states = cartesian_product(BallInf(zeros(4), 2.0), Universe(1))
 goal_states_x1x2 = Hyperrectangle(low=[-0.1, -0.9], high=[0.2, -0.6])
 goal_states = cartesian_product(goal_states_x1x2, Universe(3))
 
-predicate_safety_verification = X -> X ⊆ safe_states
-predicate_reachability_falsification =
-    sol -> all(isdisjoint(project(R, [1, 2]), goal_states_x1x2) for F in sol for R in F);
+predicate_safety = X -> X ⊆ safe_states
+predicate_reachability =
+    sol -> project(sol[end][end], [1, 2]) ⊆ goal_states_x1x2;
 
 # ## Results
 
 alg = TMJets(abstol=1e-10, orderT=8, orderQ=3)
 alg_nn = DeepZ()
 
-function benchmark(prob; T, splitter, goal::String, silent::Bool=false)
+function benchmark(prob; T, splitter, predicate, silent::Bool=false)
     ## We solve the controlled system:
     silent || println("flowpipe construction")
     res_sol = @timed sol = solve(prob, T=T, alg_nn=alg_nn, alg=alg,
@@ -114,27 +118,17 @@ function benchmark(prob; T, splitter, goal::String, silent::Bool=false)
     ## Next we check the property for an overapproximated flowpipe:
     silent || println("property checking")
     solz = overapproximate(sol, Zonotope)
-    if goal == "verification"
-        res_pred = @timed predicate_safety_verification(solz)
-        silent || print_timed(res_pred)
-        if res_pred.value
-            silent || println("The property is satisfied.")
-        else
-            silent || println("The property may be violated.")
-        end
-    elseif goal == "falsification"
-        res_pred = @timed predicate_reachability_falsification(solz)
-        silent || print_timed(res_pred)
-        if res_pred.value
-            silent || println("The property is violated.")
-        else
-            silent || println("The property may be satisfied.")
-        end
+    res_pred = @timed predicate(solz)
+    silent || print_timed(res_pred)
+    if res_pred.value
+        silent || println("The property is satisfied.")
+    else
+        silent || println("The property may be violated.")
     end
     return solz
 end
 
-function plot_helper(fig, sol, sim, vars, T, X₀, property)
+function plot_helper(fig, sol, sim, vars, T, X₀, property; zoom=nothing)
     if property == "safety"
         states = safe_states
     elseif property == "reachability"
@@ -154,66 +148,69 @@ function plot_helper(fig, sol, sim, vars, T, X₀, property)
     end
     plot!(fig, sol, vars=vars, color=:yellow, lab="")
     plot_simulation!(fig, sim; vars=vars, color=:black, lab="")
+    if !isnothing(zoom)
+        zoom()
+    end
 end
 
 for case in 1:3
     if case == 1
         println("Running analysis with ReLU controller")
-        prob = problem(controller_relu, period_ReLU, X₀_ReLU)
+        prob = problem(controller_relu, period_ReLU, X₀_ReLU,
+                       control_postprocessing_ReLU)
+        predicate = predicate_safety
         scenario = "relu"
         T_reach = verification ? T_ReLU : T_warmup_ReLU  # shorter time horizon if not verifying
         T_warmup = T_warmup_ReLU
         X₀ = X₀_ReLU
         splitter = verification ? BoxSplitter([4, 4, 3, 5]) : NoSplitter()
         trajectories = 10
-        include_vertices = true
         plot_x3_x4 = true
-        goal = "verification"
         property = "safety"
-        result = "verified"
+        zoom = nothing
     elseif case == 2
         println("Running analysis with sigmoid controller")
-        prob = problem(controller_sigmoid, period_others, X₀_others)
+        prob = problem(controller_sigmoid, period_others, X₀_others,
+                       control_postprocessing_others)
+        predicate = predicate_reachability
         scenario = "sigmoid"
         T_reach = T_others
         T_warmup = T_warmup_others
         X₀ = X₀_others
         splitter = NoSplitter()
         trajectories = 1
-        include_vertices = true
         plot_x3_x4 = false
-        goal = "falsification"
         property = "reachability"
-        result = "falsified"
+        zoom = () -> lens!(fig, [0.1, 0.25], [-0.9, -0.8], inset = (1, bbox(0.4, 0.4, 0.3, 0.3)), lc=:black)
     else
         println("Running analysis with ReLU/tanh controller")
-        prob = problem(controller_relutanh, period_others, X₀_others)
+        prob = problem(controller_relutanh, period_others, X₀_others,
+                       control_postprocessing_others)
+        predicate = predicate_reachability
         scenario = "relutanh"
         T_reach = T_others
         T_warmup = T_warmup_others
         X₀ = X₀_others
         splitter = NoSplitter()
         trajectories = 1
-        include_vertices = true
         plot_x3_x4 = false
-        goal = "falsification"
         property = "reachability"
-        result = "falsified"
+        zoom = () -> lens!(fig, [0.0, 0.25], [-0.85, -0.7], inset = (1, bbox(0.4, 0.4, 0.3, 0.3)), lc=:black)
     end
 
-    benchmark(prob; T=T_warmup, splitter=NoSplitter(), goal=goal, silent=true)  # warm-up
-    res = @timed benchmark(prob; T=T_reach, splitter=splitter, goal=goal)  # benchmark
+    benchmark(prob; T=T_warmup, splitter=NoSplitter(), predicate=predicate, silent=true)  # warm-up
+    res = @timed benchmark(prob; T=T_reach, splitter=splitter, predicate=predicate)  # benchmark
     sol = res.value
     println("total analysis time")
     print_timed(res);
     io = isdefined(Main, :io) ? Main.io : stdout
-    print(io, "JuliaReach, TORA, $scenario, $result, $(res.time)\n")
+    print(io, "JuliaReach, TORA, $scenario, verified, $(res.time)\n")
 
     # We also compute some simulations:
 
     println("simulation")
     res = @timed simulate(prob, T=T_reach; trajectories=trajectories,
-                          include_vertices=include_vertices)
+                          include_vertices=true)
     sim = res.value
     print_timed(res);
 
@@ -221,7 +218,7 @@ for case in 1:3
 
     vars = (1, 2)
     fig = plot(xlab="x₁", ylab="x₂")
-    plot_helper(fig, sol, sim, vars, T_reach, X₀, property)
+    plot_helper(fig, sol, sim, vars, T_reach, X₀, property; zoom=zoom)
     savefig("TORA-$scenario-x1-x2.png")
 
     if plot_x3_x4
