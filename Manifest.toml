@@ -203,10 +203,10 @@ uuid = "fb6a15b2-703c-40df-9091-08a04967cfa9"
 version = "0.1.10"
 
 [[deps.ClosedLoopReachability]]
-deps = ["CommonSolve", "Parameters", "ReachabilityAnalysis", "Reexport", "Requires"]
-git-tree-sha1 = "6d653c7c64bbbfbcb08f3f92cab60cbfecd078e9"
+deps = ["CommonSolve", "Parameters", "ReachabilityAnalysis", "ReachabilityBase", "Reexport", "Requires"]
+git-tree-sha1 = "12d4df3fd2bc7890876552a9ac2a7b8ca1370ed3"
 uuid = "73c0b437-a350-4e9b-97ac-9adb151c271b"
-version = "0.2.1"
+version = "0.2.4"
 
 [[deps.CodecBzip2]]
 deps = ["Bzip2_jll", "Libdl", "TranscodingStreams"]
@@ -1362,6 +1362,12 @@ deps = ["CarlemanLinearization", "CommonSolve", "ExprTools", "HybridSystems", "I
 git-tree-sha1 = "2f0b7d08846bbb581f5c999d0b1a4b0b2f2b25e5"
 uuid = "1e97bd63-91d1-579d-8e8d-501d2b57c93f"
 version = "0.18.8"
+
+[[deps.ReachabilityBase]]
+deps = ["ExprTools", "InteractiveUtils", "LinearAlgebra", "Random", "Requires", "SparseArrays"]
+git-tree-sha1 = "ff7335089fea792c22dc7eb37895f5de7b4522c5"
+uuid = "379f33d0-9447-4353-bd03-d664070e549f"
+version = "0.1.1"
 
 [[deps.RecipesBase]]
 git-tree-sha1 = "6bf3f380ff52ce0832ddd3a2a7b9538ed1bcca7d"
